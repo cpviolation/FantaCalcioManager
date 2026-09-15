@@ -1,5 +1,13 @@
 from fantacalciomanager.archive import InetConfig, extract_archive, find_fca_file, parse_inet_ini
 from fantacalciomanager.database import Database, HistoricalStat, Player, PlayerRole, PlayersDatabase, Team
+from fantacalciomanager.sync import (
+    ConfigLega,
+    RisultatoImportazione,
+    RisultatoSetup,
+    crea_lega_da_archivio,
+    importa_giocatori,
+    importa_storico,
+)
 from fantacalciomanager.web import download_file, download_season_archive, download_update_file, fetch_file_list
 
 __all__ = [
@@ -17,4 +25,11 @@ __all__ = [
     "download_season_archive",
     "download_update_file",
     "fetch_file_list",
+    # sync
+    "ConfigLega",
+    "RisultatoImportazione",
+    "RisultatoSetup",
+    "crea_lega_da_archivio",
+    "importa_giocatori",
+    "importa_storico",
 ]
