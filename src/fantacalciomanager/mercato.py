@@ -465,7 +465,7 @@ class Mercato:
         desc = f"{descrizione}: {nome}"
         conn.execute(
             """INSERT INTO bilanci
-               (id_fantasquadra, descrizione, valore, data_operazione)
+               (id_fantasquadra, descrizione, valore, data)
                VALUES (?, ?, ?, date('now'))""",
             (id_fantasquadra, desc, valore),
         )

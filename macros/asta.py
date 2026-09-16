@@ -7,8 +7,8 @@ Macro per la gestione dell'asta fantacalcio.
 Modalità
 --------
   libera   Ogni squadra sceglie il giocatore da mettere all'asta.
-           L'ordine di chiamata è random (estratto ogni turno) oppure
-           fisso (scelto dall'utente all'inizio).
+           L'ordine di chiamata è libero (default), random (estratto ogni
+           turno) oppure fisso (scelto dall'utente all'inizio).
 
   random   Il sistema estrae casualmente il prossimo giocatore tra
            quelli ancora liberi.
@@ -18,9 +18,20 @@ Modalità
            oppure con i nomi:
              giocatore,squadra,prezzo
 
+Flusso di aggiudicazione
+------------------------
+  Default (senza --rilanci):
+    Annuncia il giocatore → chiedi a quale squadra → chiedi il prezzo →
+    registra subito. Semplice e veloce.
+
+  Con --rilanci:
+    Ciclo di rilanci aperti all'italiana: le squadre dichiarano il
+    proprio massimo oppure passano; vince chi offre di più.
+
 Uso
 ---
   python macros/asta.py --db data/lega.db --lega 1
+  python macros/asta.py --db data/lega.db --lega 1 --rilanci
   python macros/asta.py --db data/lega.db --lega 1 --mode random
   python macros/asta.py --db data/lega.db --lega 1 --mode importa --file asta.csv
   python macros/asta.py --db data/lega.db --lega 1 --mode libera --ordine fisso
@@ -45,12 +56,14 @@ from fantacalciomanager.models import Ruolo
 # Costanti
 # ---------------------------------------------------------------------------
 
-COMANDI_CERCA = ("cerca", "c")
 COMANDI_BUDGET = ("budget", "b")
-COMANDI_ROSA = ("rosa", "r")
-COMANDI_SKIP = ("skip", "s", "passa", "p")
-COMANDI_FINE = ("fine", "q", "esci", "exit")
-COMANDI_HELP = ("help", "h", "?", "aiuto")
+COMANDI_ROSA   = ("rosa", "r")
+COMANDI_SKIP   = ("skip", "s", "passa", "p")
+COMANDI_FINE   = ("fine", "q", "esci", "exit")
+
+
+class _AstaInterrotta(Exception):
+    """Sollevata quando l'utente vuole uscire dall'asta."""
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +133,6 @@ def mostra_rosa(db: Database, id_fsq: int) -> None:
 
 
 def _riga_giocatore(g) -> str:
-    """Riga di una riga giocatore da cerca_giocatori."""
     return (f"[{g.id:5d}] {_abbr_ruolo(g.ruolo)} "
             f"{g.nome:<26s} {g.squadra:<15s} Q.{g.costo_iniziale}")
 
@@ -128,47 +140,6 @@ def _riga_giocatore(g) -> str:
 # ---------------------------------------------------------------------------
 # Ricerca giocatore
 # ---------------------------------------------------------------------------
-
-def scegli_giocatore(db: Database, id_lega: int,
-                     prompt: str = "  Cerca giocatore (nome/id): ") -> Optional[object]:
-    """
-    Interattivo: cerca per nome o id.
-    Ritorna il giocatore selezionato o None se annullato.
-    """
-    while True:
-        raw = input(prompt).strip()
-        if not raw or raw.lower() in COMANDI_FINE:
-            return None
-
-        # Ricerca per ID
-        if raw.isdigit():
-            g = db.get_giocatore(int(raw))
-            if g:
-                return g
-            print("  ✗ Giocatore non trovato.")
-            continue
-
-        # Ricerca per nome
-        risultati = db.cerca_giocatori(nome=raw)
-        liberi = [g for g in risultati
-                  if not _in_rosa(db, id_lega, g.id)]
-        if not liberi:
-            print("  ✗ Nessun giocatore libero trovato.")
-            continue
-        if len(liberi) == 1:
-            return liberi[0]
-
-        print(f"  {len(liberi)} risultati:")
-        for g in liberi[:15]:
-            print(f"    {_riga_giocatore(g)}")
-        id_g = _input_int("  Inserisci l'id del giocatore (invio=annulla)", default=None)
-        if id_g is None:
-            continue
-        g = db.get_giocatore(id_g)
-        if g:
-            return g
-        print("  ✗ Id non valido.")
-
 
 def _in_rosa(db: Database, id_lega: int, id_giocatore: int) -> bool:
     """True se il giocatore è già in rosa in questa lega."""
@@ -181,137 +152,6 @@ def _in_rosa(db: Database, id_lega: int, id_giocatore: int) -> bool:
     ).fetchone()
     return row is not None
 
-
-# ---------------------------------------------------------------------------
-# Motore d'asta per un singolo giocatore
-# ---------------------------------------------------------------------------
-
-def esegui_asta_giocatore(
-    db: Database,
-    mercato: Mercato,
-    id_lega: int,
-    anno: int,
-    id_giocatore: int,
-    id_squadra_chiamante: int | None = None,
-) -> bool:
-    """
-    Gestisce l'asta per un singolo giocatore.
-
-    Flusso:
-      - annuncia il giocatore
-      - ciclo di rilanci aperti: le squadre dichiarano il loro massimo
-        o passano
-      - aggiudica al miglior offerente
-
-    Ritorna True se il giocatore è stato aggiudicato, False se saltato.
-    """
-    giocatore = db.get_giocatore(id_giocatore)
-    if not giocatore:
-        print(f"  ✗ Giocatore id={id_giocatore} non trovato.")
-        return False
-
-    squadre = db.lista_fantasquadre(id_lega)
-
-    _sep()
-    print(f"  ⚽  {_abbr_ruolo(giocatore.ruolo)}  {giocatore.nome}"
-          f"  ({giocatore.squadra})  — Q.Base: {giocatore.costo_iniziale}")
-    mostra_budget(db, id_lega)
-
-    # Stato asta
-    offerta_corrente: int = 0
-    id_vincitore: int | None = None
-    nome_vincitore: str = ""
-
-    # Ciclo rilanci: continuiamo finché qualcuno rilancia
-    passaggi_consecutivi = 0
-    num_squadre = len(squadre)
-
-    print("  Rilanci aperti — digita il tuo importo o 'passa'.")
-    print("  (skip/s per saltare il giocatore, fine/q per terminare l'asta)\n")
-
-    idx = 0   # squadra corrente nel ciclo
-    while passaggi_consecutivi < num_squadre:
-        fsq = squadre[idx % num_squadre]
-        idx += 1
-
-        # Salta squadre senza crediti sufficienti per rilanciare
-        minimo = offerta_corrente + 1 if offerta_corrente > 0 else 1
-        if fsq.crediti_residui < minimo:
-            passaggi_consecutivi += 1
-            continue
-
-        # Mostra stato corrente
-        if offerta_corrente > 0:
-            stato = f"  Offerta: {offerta_corrente} cr ({nome_vincitore})"
-        else:
-            stato = "  Nessuna offerta ancora."
-        prompt = (f"  [{fsq.nome}] ({fsq.crediti_residui} cr disponibili)"
-                  f"  min={minimo} — offerta (invio=passa): ")
-
-        raw = input(prompt).strip().lower()
-
-        if raw in COMANDI_FINE:
-            print("\n  Asta interrotta.")
-            return False
-
-        if raw in COMANDI_SKIP or raw == "":
-            passaggi_consecutivi += 1
-            continue
-
-        if raw in COMANDI_BUDGET:
-            mostra_budget(db, id_lega)
-            idx -= 1   # riproponi la stessa squadra
-            passaggi_consecutivi = 0
-            continue
-
-        try:
-            importo = int(raw)
-        except ValueError:
-            print("  ✗ Inserisci un numero o 'passa'.")
-            idx -= 1
-            continue
-
-        if importo < minimo:
-            print(f"  ✗ Offerta minima: {minimo} cr.")
-            idx -= 1
-            continue
-
-        if importo > fsq.crediti_residui:
-            print(f"  ✗ Crediti insufficienti ({fsq.crediti_residui} disponibili).")
-            idx -= 1
-            continue
-
-        # Rilancio valido
-        offerta_corrente = importo
-        id_vincitore = fsq.id
-        nome_vincitore = fsq.nome
-        passaggi_consecutivi = 0
-        print(f"  ✓ {fsq.nome} offre {importo} cr.")
-
-        # Ricarica crediti aggiornati
-        squadre = db.lista_fantasquadre(id_lega)
-
-    # Fine asta per questo giocatore
-    if id_vincitore is None:
-        print(f"\n  — {giocatore.nome} non aggiudicato (nessuna offerta).")
-        return False
-
-    # In modalità libera: se nessuno ha rilanciato tranne la squadra
-    # chiamante, può aggiudicarsi al prezzo base
-    try:
-        mercato.acquista(id_vincitore, id_giocatore, offerta_corrente)
-        print(f"\n  🏆  {giocatore.nome} → {nome_vincitore} "
-              f"a {offerta_corrente} cr")
-    except MercatoError as exc:
-        print(f"\n  ✗ Errore registrazione: {exc}")
-        return False
-
-    return True
-
-
-# ---------------------------------------------------------------------------
-# Modalità LIBERA
-# ---------------------------------------------------------------------------
 
 def _cerca_e_seleziona(db: Database, id_lega: int, raw: str) -> Optional[object]:
     """
@@ -342,9 +182,249 @@ def _cerca_e_seleziona(db: Database, id_lega: int, raw: str) -> Optional[object]
     return db.get_giocatore(id_g) if id_g else None
 
 
+# ---------------------------------------------------------------------------
+# Flusso di aggiudicazione: DIRETTO (default)
+# ---------------------------------------------------------------------------
+
+def _scegli_squadra(squadre: list, prompt: str) -> object | None:
+    """
+    Chiede a quale squadra assegnare il giocatore.
+    Accetta numero di riga, id squadra o nome (parziale).
+    Ritorna la fantasquadra scelta o None se l'utente salta.
+    Solleva _AstaInterrotta se l'utente vuole uscire.
+    """
+    print("  Squadre disponibili:")
+    for i, fsq in enumerate(squadre, 1):
+        print(f"    [{i}] {fsq.nome:<22s}  {fsq.crediti_residui} cr")
+
+    while True:
+        raw = input(f"\n  {prompt} (invio=salta, 'fine'=esci): ").strip()
+        rl = raw.lower()
+
+        if not raw or rl in COMANDI_SKIP:
+            return None
+        if rl in COMANDI_FINE:
+            raise _AstaInterrotta
+
+        # numero di riga nella lista
+        if raw.isdigit():
+            idx = int(raw) - 1
+            if 0 <= idx < len(squadre):
+                return squadre[idx]
+            # prova come id assoluto
+            match = next((f for f in squadre if f.id == int(raw)), None)
+            if match:
+                return match
+            print("  ✗ Numero non valido.")
+            continue
+
+        # ricerca per nome (parziale)
+        matches = [f for f in squadre if rl in f.nome.lower()]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            print("  ✗ Ambiguo: " + ", ".join(f.nome for f in matches))
+        else:
+            print("  ✗ Squadra non trovata.")
+
+
+def _flusso_diretto(
+    db: Database,
+    mercato: Mercato,
+    id_lega: int,
+    giocatore,
+    squadre: list,
+) -> bool:
+    """
+    Assegnazione diretta: chiedi squadra → chiedi prezzo → registra.
+    Solleva _AstaInterrotta se l'utente vuole uscire dall'asta.
+    """
+    # Scegli squadra
+    fsq = _scegli_squadra(squadre, "A quale squadra?")
+    if fsq is None:
+        print(f"  — {giocatore.nome} saltato.")
+        return False
+
+    # Scegli prezzo
+    while True:
+        raw = input(
+            f"  Prezzo per {giocatore.nome} → {fsq.nome} "
+            f"(max {fsq.crediti_residui} cr, invio=salta): "
+        ).strip()
+        rl = raw.lower()
+        if not raw or rl in COMANDI_SKIP:
+            print(f"  — {giocatore.nome} saltato.")
+            return False
+        if rl in COMANDI_FINE:
+            raise _AstaInterrotta
+        try:
+            prezzo = int(raw)
+        except ValueError:
+            print("  ✗ Inserisci un numero intero.")
+            continue
+        if prezzo < 1:
+            print("  ✗ Il prezzo minimo è 1 credito.")
+            continue
+        if prezzo > fsq.crediti_residui:
+            print(f"  ✗ Crediti insufficienti ({fsq.crediti_residui} disponibili).")
+            continue
+        break
+
+    try:
+        mercato.acquista(fsq.id, giocatore.id, prezzo)
+        print(f"\n  🏆  {giocatore.nome} → {fsq.nome} a {prezzo} cr\n")
+    except MercatoError as exc:
+        print(f"\n  ✗ Errore registrazione: {exc}")
+        return False
+
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Flusso di aggiudicazione: RILANCI (--rilanci)
+# ---------------------------------------------------------------------------
+
+def _flusso_rilanci(
+    db: Database,
+    mercato: Mercato,
+    id_lega: int,
+    giocatore,
+    squadre: list,
+) -> bool:
+    """
+    Ciclo di rilanci aperti all'italiana.
+    Solleva _AstaInterrotta se l'utente vuole uscire.
+    """
+    offerta_corrente: int = 0
+    id_vincitore: int | None = None
+    nome_vincitore: str = ""
+
+    passaggi_consecutivi = 0
+    num_squadre = len(squadre)
+
+    print("  Rilanci aperti — digita l'importo o invio per passare.")
+    print("  (skip=salta giocatore, fine=esci dall'asta, budget=mostra budget)\n")
+
+    idx = 0
+    while passaggi_consecutivi < num_squadre:
+        fsq = squadre[idx % num_squadre]
+        idx += 1
+
+        minimo = offerta_corrente + 1 if offerta_corrente > 0 else 1
+        if fsq.crediti_residui < minimo:
+            passaggi_consecutivi += 1
+            continue
+
+        if offerta_corrente > 0:
+            print(f"  Offerta: {offerta_corrente} cr ({nome_vincitore})")
+
+        prompt = (f"  [{fsq.nome}] ({fsq.crediti_residui} cr)"
+                  f"  min={minimo} — offerta (invio=passa): ")
+        raw = input(prompt).strip().lower()
+
+        if raw in COMANDI_FINE:
+            raise _AstaInterrotta
+
+        if raw in COMANDI_SKIP:
+            print(f"  — {giocatore.nome} saltato.")
+            return False
+
+        if raw == "" or raw in ("p", "passa"):
+            passaggi_consecutivi += 1
+            continue
+
+        if raw in COMANDI_BUDGET:
+            mostra_budget(db, id_lega)
+            idx -= 1
+            continue
+
+        try:
+            importo = int(raw)
+        except ValueError:
+            print("  ✗ Inserisci un numero o premi invio per passare.")
+            idx -= 1
+            continue
+
+        if importo < minimo:
+            print(f"  ✗ Offerta minima: {minimo} cr.")
+            idx -= 1
+            continue
+
+        if importo > fsq.crediti_residui:
+            print(f"  ✗ Crediti insufficienti ({fsq.crediti_residui} disponibili).")
+            idx -= 1
+            continue
+
+        offerta_corrente = importo
+        id_vincitore = fsq.id
+        nome_vincitore = fsq.nome
+        passaggi_consecutivi = 0
+        print(f"  ✓ {fsq.nome} offre {importo} cr.")
+
+        # Ricarica crediti aggiornati
+        squadre = db.lista_fantasquadre(id_lega)
+
+    if id_vincitore is None:
+        print(f"\n  — {giocatore.nome} non aggiudicato (nessuna offerta).")
+        return False
+
+    try:
+        mercato.acquista(id_vincitore, giocatore.id, offerta_corrente)
+        print(f"\n  🏆  {giocatore.nome} → {nome_vincitore} a {offerta_corrente} cr\n")
+    except MercatoError as exc:
+        print(f"\n  ✗ Errore registrazione: {exc}")
+        return False
+
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Entry point per un singolo giocatore
+# ---------------------------------------------------------------------------
+
+def esegui_asta_giocatore(
+    db: Database,
+    mercato: Mercato,
+    id_lega: int,
+    anno: int,
+    id_giocatore: int,
+    id_squadra_chiamante: int | None = None,
+    rilanci: bool = False,
+) -> bool:
+    """
+    Gestisce l'assegnazione di un singolo giocatore.
+
+    Se rilanci=False (default): flusso diretto (squadra + prezzo).
+    Se rilanci=True: ciclo di rilanci aperti all'italiana.
+
+    Ritorna True se aggiudicato, False se saltato.
+    Solleva _AstaInterrotta se l'utente vuole uscire dall'asta.
+    """
+    giocatore = db.get_giocatore(id_giocatore)
+    if not giocatore:
+        print(f"  ✗ Giocatore id={id_giocatore} non trovato.")
+        return False
+
+    squadre = db.lista_fantasquadre(id_lega)
+
+    _sep()
+    print(f"  ⚽  {_abbr_ruolo(giocatore.ruolo)}  {giocatore.nome}"
+          f"  ({giocatore.squadra})  — Q.Base: {giocatore.costo_iniziale}")
+    mostra_budget(db, id_lega)
+
+    if rilanci:
+        return _flusso_rilanci(db, mercato, id_lega, giocatore, squadre)
+    else:
+        return _flusso_diretto(db, mercato, id_lega, giocatore, squadre)
+
+
+# ---------------------------------------------------------------------------
+# Modalità LIBERA
+# ---------------------------------------------------------------------------
+
 def modalita_libera(db: Database, mercato: Mercato,
                     id_lega: int, anno: int,
-                    ordine: str) -> None:
+                    ordine: str, rilanci: bool) -> None:
     """
     Modalità libera con tre varianti di ordine di chiamata:
       'libero'  — nessun turno; chiunque chiama il prossimo giocatore
@@ -354,7 +434,8 @@ def modalita_libera(db: Database, mercato: Mercato,
     titoli = {"libero": "nessun turno fisso",
               "random": "ordine casuale",
               "fisso":  "ordine fisso"}
-    _header(f"Modalità LIBERA — {titoli.get(ordine, ordine)}")
+    modo_agg = "rilanci aperti" if rilanci else "assegnazione diretta"
+    _header(f"Modalità LIBERA — {titoli.get(ordine, ordine)} — {modo_agg}")
 
     squadre = db.lista_fantasquadre(id_lega)
     if not squadre:
@@ -409,7 +490,11 @@ def modalita_libera(db: Database, mercato: Mercato,
             if _in_rosa(db, id_lega, giocatore.id):
                 print("  ✗ Giocatore già in rosa.")
                 continue
-            esegui_asta_giocatore(db, mercato, id_lega, anno, giocatore.id)
+            try:
+                esegui_asta_giocatore(db, mercato, id_lega, anno,
+                                      giocatore.id, rilanci=rilanci)
+            except _AstaInterrotta:
+                break
             continue
 
         # ── modalità RANDOM o FISSO: turno per squadra ─────────────────
@@ -461,8 +546,11 @@ def modalita_libera(db: Database, mercato: Mercato,
                 turno -= 1
             continue
 
-        esegui_asta_giocatore(db, mercato, id_lega, anno,
-                               giocatore.id, chiamante.id)
+        try:
+            esegui_asta_giocatore(db, mercato, id_lega, anno,
+                                   giocatore.id, chiamante.id, rilanci=rilanci)
+        except _AstaInterrotta:
+            break
 
 
 # ---------------------------------------------------------------------------
@@ -470,10 +558,10 @@ def modalita_libera(db: Database, mercato: Mercato,
 # ---------------------------------------------------------------------------
 
 def modalita_random(db: Database, mercato: Mercato,
-                    id_lega: int, anno: int) -> None:
-    _header("Modalità RANDOM — estrazione casuale dei giocatori")
+                    id_lega: int, anno: int, rilanci: bool) -> None:
+    modo_agg = "rilanci aperti" if rilanci else "assegnazione diretta"
+    _header(f"Modalità RANDOM — estrazione casuale — {modo_agg}")
 
-    # Filtra per ruolo opzionalmente
     print("  Filtra per ruolo: P=Portiere D=Difensore C=Centrocampista A=Attaccante")
     raw = input("  Ruoli da includere (invio=tutti): ").strip().upper()
     filtro_ruoli: list[int] | None = None
@@ -482,7 +570,6 @@ def modalita_random(db: Database, mercato: Mercato,
                  "C": Ruolo.CENTROCAMPISTA.value, "A": Ruolo.ATTACCANTE.value}
         filtro_ruoli = [mappa[c] for c in raw if c in mappa]
 
-    # Pool giocatori liberi
     def pool_liberi() -> list:
         conn = db.connetti()
         query = """
@@ -508,7 +595,7 @@ def modalita_random(db: Database, mercato: Mercato,
             print("  Tutti i giocatori sono stati assegnati.")
             break
 
-        raw = input(f"  [{len(liberi)} giocatori liberi] Invio=estrai | budget | fine: ").strip().lower()
+        raw = input(f"  [{len(liberi)} liberi] Invio=estrai | budget | fine: ").strip().lower()
         if raw in COMANDI_FINE:
             break
         if raw in COMANDI_BUDGET:
@@ -516,7 +603,11 @@ def modalita_random(db: Database, mercato: Mercato,
             continue
 
         id_estratto = random.choice(liberi)
-        esegui_asta_giocatore(db, mercato, id_lega, anno, id_estratto)
+        try:
+            esegui_asta_giocatore(db, mercato, id_lega, anno,
+                                   id_estratto, rilanci=rilanci)
+        except _AstaInterrotta:
+            break
 
 
 # ---------------------------------------------------------------------------
@@ -572,7 +663,6 @@ def modalita_importa(db: Database, mercato: Mercato,
             nome_sq = riga["squadra"].strip().lower()
             id_sq = squadre.get(nome_sq)
             if not id_sq:
-                # Ricerca parziale
                 matches = [sid for nome, sid in squadre.items()
                            if nome_sq in nome]
                 if len(matches) == 1:
@@ -670,14 +760,17 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Esempi:
-  # Asta libera senza turni — chiunque chiama il prossimo (default)
+  # Asta libera, assegnazione diretta (default)
   python macros/asta.py --db data/lega.db --lega 1
 
-  # Asta libera con ordine di chiamata random
-  python macros/asta.py --db data/lega.db --lega 1 --mode libera --ordine random
+  # Asta libera con rilanci aperti all'italiana
+  python macros/asta.py --db data/lega.db --lega 1 --rilanci
 
-  # Asta libera con ordine fisso (scegli tu la sequenza all'inizio)
-  python macros/asta.py --db data/lega.db --lega 1 --mode libera --ordine fisso
+  # Asta libera con ordine di chiamata random
+  python macros/asta.py --db data/lega.db --lega 1 --ordine random
+
+  # Asta libera con ordine fisso (scegli la sequenza all'inizio)
+  python macros/asta.py --db data/lega.db --lega 1 --ordine fisso
 
   # Estrazione random dei giocatori
   python macros/asta.py --db data/lega.db --lega 1 --mode random
@@ -707,6 +800,8 @@ Formato CSV importa:
                         "libero=nessun turno (default), "
                         "random=squadra estratta ogni turno, "
                         "fisso=ordine scelto all'inizio")
+    p.add_argument("--rilanci", action="store_true",
+                   help="Usa rilanci aperti all'italiana invece dell'assegnazione diretta")
     p.add_argument("--file",   help="File CSV per modalità importa")
     return p
 
@@ -726,10 +821,11 @@ def main() -> None:
     print(db.info_lega(id_lega))
 
     if args.mode == "libera":
-        modalita_libera(db, mercato, id_lega, anno, ordine=args.ordine)
+        modalita_libera(db, mercato, id_lega, anno,
+                        ordine=args.ordine, rilanci=args.rilanci)
 
     elif args.mode == "random":
-        modalita_random(db, mercato, id_lega, anno)
+        modalita_random(db, mercato, id_lega, anno, rilanci=args.rilanci)
 
     elif args.mode == "importa":
         if not args.file:
