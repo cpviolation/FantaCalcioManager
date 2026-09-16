@@ -728,6 +728,48 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
+
+    def aggiungi_crediti(
+        self,
+        id_fsq: int,
+        delta: int,
+        descrizione: str = "Integrazione crediti",
+    ) -> None:
+        """
+        Aggiunge (o toglie se negativo) crediti a una fantasquadra
+        e registra il movimento nel bilancio, in un'unica transazione.
+        """
+        with self.transazione() as conn:
+            conn.execute(
+                "UPDATE fantasquadre"
+                " SET crediti_residui=crediti_residui+?"
+                " WHERE id=?",
+                (delta, id_fsq),
+            )
+            conn.execute(
+                "INSERT INTO bilanci(id_fantasquadra,descrizione,valore,data)"
+                " VALUES(?,?,?,date('now'))",
+                (id_fsq, descrizione, delta),
+            )
+
+    def bilancio_lega(self, id_lega: int) -> list[dict]:
+        """
+        Restituisce tutti i movimenti di bilancio di tutte le
+        fantasquadre della lega, con il nome della squadra incluso.
+        Ordinati per squadra, data, id.
+        """
+        rows = self.connetti().execute(
+            """
+            SELECT b.*, f.nome AS nome_squadra
+            FROM bilanci b
+            JOIN fantasquadre f ON f.id = b.id_fantasquadra
+            WHERE f.id_lega = ?
+            ORDER BY f.nome, b.data, b.id
+            """,
+            (id_lega,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     # ------------------------------------------------------------------
     # REGOLE PUNTEGGIO
     # ------------------------------------------------------------------

@@ -182,6 +182,164 @@ def modifica_fantasquadra(db: Database, id_lega: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Visualizza bilancio
+# ---------------------------------------------------------------------------
+
+def _formato_valore(v: int) -> str:
+    return f"+{v}" if v >= 0 else str(v)
+
+
+def visualizza_bilancio(db: Database, id_lega: int) -> None:
+    squadre = db.lista_fantasquadre(id_lega)
+    if not squadre:
+        print("Nessuna fantasquadra trovata.")
+        return
+
+    print("\n  Visualizza bilancio per:")
+    print("  [0] Tutta la lega")
+    for fsq in squadre:
+        print(f"  [{fsq.id:2d}] {fsq.nome}")
+
+    raw = input("\n  Scelta (invio=annulla): ").strip()
+    if not raw:
+        return
+
+    if raw == "0":
+        # Bilancio completo lega
+        movimenti = db.bilancio_lega(id_lega)
+        if not movimenti:
+            print("\n  (nessun movimento registrato)")
+            return
+
+        print()
+        squadra_corrente = ""
+        totale_squadra = 0
+        for m in movimenti:
+            if m["nome_squadra"] != squadra_corrente:
+                if squadra_corrente:
+                    print(f"  {'─'*50}")
+                    print(f"  Totale: {_formato_valore(totale_squadra)} cr")
+                squadra_corrente = m["nome_squadra"]
+                totale_squadra = 0
+                print(f"\n  ── {squadra_corrente} ──")
+                print(f"  {'Data':<12} {'Valore':>7}  Descrizione")
+                print(f"  {'─'*50}")
+            data = m.get("data") or "—"
+            valore = int(m["valore"])
+            totale_squadra += valore
+            print(f"  {str(data):<12} {_formato_valore(valore):>7}  {m['descrizione']}")
+        if squadra_corrente:
+            print(f"  {'─'*50}")
+            print(f"  Totale: {_formato_valore(totale_squadra)} cr")
+
+    else:
+        # Bilancio singola squadra
+        try:
+            id_fsq = int(raw)
+        except ValueError:
+            print("  ✗ Scelta non valida.")
+            return
+
+        fsq = next((f for f in squadre if f.id == id_fsq), None)
+        if not fsq:
+            print("  ✗ Fantasquadra non trovata.")
+            return
+
+        movimenti = db.bilancio_fantasquadra(id_fsq)
+        print(f"\n  ── Bilancio: {fsq.nome} ──")
+
+        if not movimenti:
+            print("  (nessun movimento registrato)")
+        else:
+            print(f"  {'Data':<12} {'Valore':>7}  Descrizione")
+            print(f"  {'─'*50}")
+            totale = 0
+            for m in movimenti:
+                data = m.get("data") or "—"
+                valore = int(m["valore"])
+                totale += valore
+                print(f"  {str(data):<12} {_formato_valore(valore):>7}  {m['descrizione']}")
+            print(f"  {'─'*50}")
+            print(f"  Totale: {_formato_valore(totale)} cr")
+
+        print(f"\n  Crediti residui attuali: {fsq.crediti_residui} cr")
+
+
+# ---------------------------------------------------------------------------
+# Aggiunta crediti
+# ---------------------------------------------------------------------------
+
+def aggiungi_crediti(db: Database, id_lega: int) -> None:
+    """
+    Aggiunge o toglie crediti a una o più fantasquadre.
+    Ogni operazione è registrata nel bilancio.
+    """
+    squadre = db.lista_fantasquadre(id_lega)
+    if not squadre:
+        print("Nessuna fantasquadra trovata.")
+        return
+
+    print("\n  Aggiungi/togli crediti\n")
+    print("  [0] Applica a tutte le squadre")
+    for fsq in squadre:
+        print(f"  [{fsq.id:2d}] {fsq.nome:<22s}  (cred. attuali: {fsq.crediti_residui})")
+
+    raw = input("\n  Scelta (invio=annulla): ").strip()
+    if not raw:
+        return
+
+    try:
+        scelta = int(raw)
+    except ValueError:
+        print("  ✗ Scelta non valida.")
+        return
+
+    if scelta == 0:
+        target = squadre
+    else:
+        fsq = next((f for f in squadre if f.id == scelta), None)
+        if not fsq:
+            print("  ✗ Fantasquadra non trovata.")
+            return
+        target = [fsq]
+
+    # Delta crediti
+    raw_delta = input("  Crediti da aggiungere (negativo per togliere): ").strip()
+    try:
+        delta = int(raw_delta)
+    except ValueError:
+        print("  ✗ Valore non valido.")
+        return
+
+    if delta == 0:
+        print("  Nessuna modifica.")
+        return
+
+    # Descrizione
+    default_desc = "Integrazione crediti pre-asta" if delta > 0 else "Riduzione crediti"
+    raw_desc = input(f"  Descrizione [{default_desc}]: ").strip()
+    descrizione = raw_desc if raw_desc else default_desc
+
+    # Conferma
+    elenco = ", ".join(f.nome for f in target)
+    segno = "+" if delta >= 0 else ""
+    risposta = input(
+        f"\n  {segno}{delta} cr a: {elenco}\n"
+        f"  Descrizione: «{descrizione}»\n"
+        f"  Confermi? [s/N]: "
+    ).strip().lower()
+    if risposta != "s":
+        print("  Annullato.")
+        return
+
+    for fsq in target:
+        db.aggiungi_crediti(fsq.id, delta, descrizione)
+        print(f"  ✓ {fsq.nome}: {segno}{delta} cr → ora {fsq.crediti_residui + delta} cr")
+
+    print(f"\n  ✓ Operazione completata su {len(target)} fantasquadra/e.")
+
+
+# ---------------------------------------------------------------------------
 # Loop principale
 # ---------------------------------------------------------------------------
 
@@ -189,6 +347,8 @@ MENU = """\
 Cosa vuoi fare?
   [1] Modifica parametri lega
   [2] Modifica una fantasquadra
+  [3] Visualizza bilancio movimenti
+  [4] Aggiungi / togli crediti
   [0] Esci
 """
 
@@ -205,6 +365,10 @@ def loop(db: Database, id_lega: int) -> None:
             modifica_lega(db, id_lega)
         elif scelta == "2":
             modifica_fantasquadra(db, id_lega)
+        elif scelta == "3":
+            visualizza_bilancio(db, id_lega)
+        elif scelta == "4":
+            aggiungi_crediti(db, id_lega)
         elif scelta == "0":
             print("Arrivederci.")
             break
