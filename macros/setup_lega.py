@@ -316,9 +316,9 @@ Esempi:
                    help="Nome della lega")
     p.add_argument("--squadre", nargs="+", metavar="NOME:PRESIDENTE",
                    help="Fantasquadre nel formato 'Nome:Presidente'")
-    p.add_argument("--crediti", type=int, default=500,
+    p.add_argument("--crediti", type=int, default=None,
                    help="Crediti iniziali per squadra (default: 500)")
-    p.add_argument("--giornate", type=int, default=38,
+    p.add_argument("--giornate", type=int, default=None,
                    help="Giornate totali (default: 38)")
     p.add_argument("--db", dest="db_path",
                    help="Percorso al file database .db")
@@ -362,10 +362,22 @@ def main() -> None:
         print("╚══════════════════════════════════════════════════╝")
         print()
 
-    anno = args.anno or _input_int("  Anno stagione (es. 2024): ")
+    anno      = args.anno      or _input_int("  Anno stagione (es. 2024): ")
     nome_lega = args.nome_lega or _input_str("  Nome della lega:          ")
-    crediti   = args.crediti
-    giornate  = args.giornate
+
+    if args.crediti is not None:
+        crediti = args.crediti
+    elif interattivo:
+        crediti = _input_int("  Crediti iniziali per squadra [500]: ", default=500)
+    else:
+        crediti = 500
+
+    if args.giornate is not None:
+        giornate = args.giornate
+    elif interattivo:
+        giornate = _input_int("  Giornate totali [38]:               ", default=38)
+    else:
+        giornate = 38
 
     db_default = str(DATA_DIR / f"lega_{nome_lega.lower().replace(' ', '_')}_{anno}.db")
     db_path = Path(args.db_path or _input_str(
