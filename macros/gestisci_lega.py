@@ -110,6 +110,19 @@ def modifica_lega(db: Database, id_lega: int) -> None:
     db.aggiorna_lega(id_lega, **campi)
     print("  ✓ Lega aggiornata.")
 
+    # Se i crediti iniziali sono cambiati, offri di allineare le squadre
+    if "crediti" in campi:
+        nuovi_crediti = campi["crediti"]
+        risposta = input(
+            f"\n  Vuoi impostare i crediti residui di tutte le fantasquadre "
+            f"a {nuovi_crediti}? [s/N]: "
+        ).strip().lower()
+        if risposta == "s":
+            squadre = db.lista_fantasquadre(id_lega)
+            for fsq in squadre:
+                db.imposta_crediti(fsq.id, nuovi_crediti)
+            print(f"  ✓ Crediti di {len(squadre)} fantasquadre impostati a {nuovi_crediti}.")
+
 
 # ---------------------------------------------------------------------------
 # Menu modifiche fantasquadra
