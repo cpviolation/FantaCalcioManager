@@ -231,6 +231,51 @@ class Database:
         ).fetchall()
         return [self._row_to_lega(r) for r in rows]
 
+    def aggiorna_lega(
+        self,
+        id_lega: int,
+        *,
+        nome: Optional[str] = None,
+        crediti: Optional[int] = None,
+        giornate: Optional[int] = None,
+        stagione: Optional[int] = None,
+    ) -> None:
+        """
+        Aggiorna i parametri di una lega esistente.
+
+        Solo i campi passati esplicitamente vengono modificati.
+        Nota: cambiare ``crediti`` aggiorna il valore di riferimento
+        per le nuove fantasquadre, ma non tocca i crediti_residui
+        delle squadre già create.
+
+        Raises
+        ------
+        ValueError se nessun campo è specificato o la lega non esiste.
+        """
+        campi: dict[str, object] = {}
+        if nome is not None:
+            campi["nome"] = nome
+        if crediti is not None:
+            campi["crediti_iniziali"] = crediti
+        if giornate is not None:
+            campi["giornate_totali"] = giornate
+        if stagione is not None:
+            campi["stagione"] = stagione
+
+        if not campi:
+            raise ValueError("Specificare almeno un campo da aggiornare.")
+
+        set_clause = ", ".join(f"{k}=?" for k in campi)
+        valori = list(campi.values()) + [id_lega]
+
+        with self.transazione() as conn:
+            cur = conn.execute(
+                f"UPDATE leghe SET {set_clause} WHERE id=?",
+                valori,
+            )
+        if cur.rowcount == 0:
+            raise ValueError(f"Lega con id={id_lega} non trovata.")
+
     def _row_to_lega(self, row) -> Lega:
         return Lega(
             id=row["id"], nome=row["nome"], anno=row["anno"],
@@ -315,6 +360,27 @@ class Database:
             cur = conn.execute(
                 f"UPDATE fantasquadre SET {set_clause} WHERE id=?",
                 valori,
+            )
+        if cur.rowcount == 0:
+            raise ValueError(f"Fantasquadra con id={id_fsq} non trovata.")
+
+    def imposta_crediti(self, id_fsq: int, valore: int) -> None:
+        """
+        Imposta i crediti residui di una fantasquadra a un valore assoluto.
+
+        Utile per correggere manualmente il budget senza dover calcolare
+        il delta rispetto al valore attuale.
+
+        Raises
+        ------
+        ValueError se ``valore`` è negativo o la fantasquadra non esiste.
+        """
+        if valore < 0:
+            raise ValueError("I crediti non possono essere negativi.")
+        with self.transazione() as conn:
+            cur = conn.execute(
+                "UPDATE fantasquadre SET crediti_residui=? WHERE id=?",
+                (valore, id_fsq),
             )
         if cur.rowcount == 0:
             raise ValueError(f"Fantasquadra con id={id_fsq} non trovata.")
