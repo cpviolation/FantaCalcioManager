@@ -770,6 +770,53 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def ripara_bilancio(self, id_lega: int) -> int:
+        """
+        Crea le voci mancanti nel bilancio per gli acquisti presenti in
+        `rose` che non hanno una corrispondente voce in `bilanci`.
+
+        Utile per correggere database in cui l'INSERT in bilancio ha
+        fallito (es. bug data_operazione) ma l'INSERT in rose era già
+        stato committato.
+
+        Restituisce il numero di voci create.
+        """
+        conn = self.connetti()
+        # Trova acquisti in rose senza voce corrispondente in bilanci
+        # (heuristica: bilancio con valore = -prezzo_acquisto per la stessa squadra)
+        rows = conn.execute(
+            """
+            SELECT r.id, r.id_fantasquadra, r.prezzo_acquisto,
+                   g.nome AS nome_giocatore
+            FROM rose r
+            JOIN giocatori g ON g.id = r.id_giocatore
+            JOIN fantasquadre f ON f.id = r.id_fantasquadra
+            WHERE f.id_lega = ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM bilanci b
+                  WHERE b.id_fantasquadra = r.id_fantasquadra
+                    AND b.valore = -r.prezzo_acquisto
+                    AND b.descrizione LIKE 'Acquisto%' || g.nome || '%'
+              )
+            ORDER BY r.id
+            """,
+            (id_lega,),
+        ).fetchall()
+
+        n = 0
+        with self.transazione() as tx:
+            for row in rows:
+                tx.execute(
+                    """INSERT INTO bilanci
+                       (id_fantasquadra, descrizione, valore, data)
+                       VALUES (?, ?, ?, date('now'))""",
+                    (row["id_fantasquadra"],
+                     f"Acquisto: {row['nome_giocatore']}",
+                     -row["prezzo_acquisto"]),
+                )
+                n += 1
+        return n
+
     # ------------------------------------------------------------------
     # REGOLE PUNTEGGIO
     # ------------------------------------------------------------------

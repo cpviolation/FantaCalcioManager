@@ -343,12 +343,34 @@ def aggiungi_crediti(db: Database, id_lega: int) -> None:
 # Loop principale
 # ---------------------------------------------------------------------------
 
+
+
+# ---------------------------------------------------------------------------
+# Riparazione bilancio
+# ---------------------------------------------------------------------------
+
+def _ripara_bilancio(db: Database, id_lega: int) -> None:
+    """Ricrea le voci di bilancio mancanti per acquisti gia in rose."""
+    print()
+    print("  Crea le voci di bilancio mancanti per gli acquisti presenti")
+    print("  nella rosa ma privi di movimento nel bilancio.")
+    risposta = input("\n  Procedi? [s/N]: ").strip().lower()
+    if risposta != "s":
+        print("  Annullato.")
+        return
+    n = db.ripara_bilancio(id_lega)
+    if n == 0:
+        print("  \u2713 Nessuna voce mancante — bilancio gia corretto.")
+    else:
+        print(f"  \u2713 Create {n} voci di bilancio mancanti.")
+
 MENU = """\
 Cosa vuoi fare?
   [1] Modifica parametri lega
   [2] Modifica una fantasquadra
   [3] Visualizza bilancio movimenti
   [4] Aggiungi / togli crediti
+  [5] Ripara bilancio (ricrea voci mancanti)
   [0] Esci
 """
 
@@ -369,6 +391,8 @@ def loop(db: Database, id_lega: int) -> None:
             visualizza_bilancio(db, id_lega)
         elif scelta == "4":
             aggiungi_crediti(db, id_lega)
+        elif scelta == "5":
+            _ripara_bilancio(db, id_lega)
         elif scelta == "0":
             print("Arrivederci.")
             break

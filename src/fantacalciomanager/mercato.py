@@ -116,22 +116,33 @@ class Mercato:
         self._verifica_crediti(id_fantasquadra, prezzo)
         self._verifica_spazio_rosa(id_fantasquadra)
 
-        conn = self.db.connetti()
-        conn.execute(
-            """INSERT INTO rose
-               (id_fantasquadra, id_giocatore, stato, contratto,
-                prezzo_acquisto, prezzo_svincolo)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (id_fantasquadra, id_giocatore,
-             StatoGiocatore.ROSA.value, contratto, prezzo, crediti_svincolo),
-        )
-        conn.commit()
+        # Recupera nome per la descrizione bilancio
+        conn0 = self.db.connetti()
+        row = conn0.execute(
+            "SELECT nome FROM giocatori WHERE id=?", (id_giocatore,)
+        ).fetchone()
+        nome_g = row["nome"] if row else str(id_giocatore)
 
-        # Aggiorna crediti fantasquadra
-        self._aggiorna_crediti(id_fantasquadra, -prezzo)
-        self._registra_movimento(
-            id_fantasquadra, id_giocatore, -prezzo, "Acquisto"
-        )
+        # Unica transazione: rose + crediti + bilancio
+        with self.db.transazione() as conn:
+            conn.execute(
+                """INSERT INTO rose
+                   (id_fantasquadra, id_giocatore, stato, contratto,
+                    prezzo_acquisto, prezzo_svincolo)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (id_fantasquadra, id_giocatore,
+                 StatoGiocatore.ROSA.value, contratto, prezzo, crediti_svincolo),
+            )
+            conn.execute(
+                "UPDATE fantasquadre SET crediti_residui=crediti_residui-? WHERE id=?",
+                (prezzo, id_fantasquadra),
+            )
+            conn.execute(
+                """INSERT INTO bilanci
+                   (id_fantasquadra, descrizione, valore, data)
+                   VALUES (?, ?, ?, date('now'))""",
+                (id_fantasquadra, f"Acquisto: {nome_g}", -prezzo),
+            )
 
         return OperazioneMercato(
             tipo="acquisto",
