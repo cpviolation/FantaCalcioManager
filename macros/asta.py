@@ -313,21 +313,64 @@ def esegui_asta_giocatore(
 # Modalità LIBERA
 # ---------------------------------------------------------------------------
 
+def _cerca_e_seleziona(db: Database, id_lega: int, raw: str) -> Optional[object]:
+    """
+    Dato un input grezzo (nome, id, 'cerca <nome>'), restituisce
+    il giocatore libero corrispondente o None.
+    """
+    raw = raw.strip()
+    if raw.isdigit():
+        return db.get_giocatore(int(raw))
+
+    if raw.lower().startswith("cerca "):
+        q = raw[6:].strip()
+    else:
+        q = raw
+
+    risultati = [g for g in db.cerca_giocatori(nome=q)
+                 if not _in_rosa(db, id_lega, g.id)]
+    if not risultati:
+        print("  ✗ Nessun giocatore libero trovato.")
+        return None
+    if len(risultati) == 1:
+        return risultati[0]
+
+    print(f"  {len(risultati)} risultati:")
+    for g in risultati[:15]:
+        print(f"    {_riga_giocatore(g)}")
+    id_g = _input_int("  Id giocatore (invio=annulla)", default=None)
+    return db.get_giocatore(id_g) if id_g else None
+
+
 def modalita_libera(db: Database, mercato: Mercato,
                     id_lega: int, anno: int,
-                    ordine_random: bool) -> None:
-    _header("Modalità LIBERA" + (" — ordine casuale" if ordine_random
-                                  else " — ordine fisso"))
+                    ordine: str) -> None:
+    """
+    Modalità libera con tre varianti di ordine di chiamata:
+      'libero'  — nessun turno; chiunque chiama il prossimo giocatore
+      'random'  — una squadra è estratta casualmente ogni turno
+      'fisso'   — le squadre si alternano nell'ordine scelto all'inizio
+    """
+    titoli = {"libero": "nessun turno fisso",
+              "random": "ordine casuale",
+              "fisso":  "ordine fisso"}
+    _header(f"Modalità LIBERA — {titoli.get(ordine, ordine)}")
+
     squadre = db.lista_fantasquadre(id_lega)
     if not squadre:
         print("  Nessuna fantasquadra trovata.")
         return
 
-    # Ordine di chiamata
-    if ordine_random:
+    turni: list = []
+
+    if ordine == "libero":
+        print("  Cerca o inserisci direttamente il giocatore da mettere all'asta.")
+        print("  Comandi: cerca <nome> | <id> | budget | rosa <id> | fine\n")
+
+    elif ordine == "random":
         print("  L'ordine di chiamata sarà estratto casualmente ogni turno.\n")
-        turni: list = []   # ricostruiamo ogni volta
-    else:
+
+    else:  # fisso
         print("  Definisci l'ordine di chiamata:")
         for i, fsq in enumerate(squadre, 1):
             print(f"    {i}. {fsq.nome}")
@@ -339,15 +382,40 @@ def modalita_libera(db: Database, mercato: Mercato,
             except (ValueError, IndexError):
                 print("  ✗ Ordine non valido, uso quello attuale.")
         turni = list(squadre)
-
-    print("\n  Comandi extra durante la ricerca: budget | rosa <id> | skip | fine\n")
+        print()
 
     turno = 0
+
     while True:
-        # Squadra chiamante
-        if ordine_random:
-            sq_list = db.lista_fantasquadre(id_lega)
-            sq_list = [s for s in sq_list if s.crediti_residui > 0]
+
+        # ── modalità LIBERO: nessun turno, prompt diretto ──────────────
+        if ordine == "libero":
+            _sep("═")
+            raw = input("  Giocatore > ").strip()
+            if not raw or raw.lower() in COMANDI_FINE:
+                break
+            if raw.lower() in COMANDI_BUDGET:
+                mostra_budget(db, id_lega)
+                continue
+            if raw.lower().startswith("rosa"):
+                parts = raw.split()
+                if len(parts) > 1 and parts[1].isdigit():
+                    mostra_rosa(db, int(parts[1]))
+                continue
+
+            giocatore = _cerca_e_seleziona(db, id_lega, raw)
+            if not giocatore:
+                continue
+            if _in_rosa(db, id_lega, giocatore.id):
+                print("  ✗ Giocatore già in rosa.")
+                continue
+            esegui_asta_giocatore(db, mercato, id_lega, anno, giocatore.id)
+            continue
+
+        # ── modalità RANDOM o FISSO: turno per squadra ─────────────────
+        if ordine == "random":
+            sq_list = [s for s in db.lista_fantasquadre(id_lega)
+                       if s.crediti_residui > 0]
             if not sq_list:
                 print("  Tutte le squadre hanno esaurito i crediti.")
                 break
@@ -358,83 +426,38 @@ def modalita_libera(db: Database, mercato: Mercato,
 
         _sep("═")
         print(f"  Turno di chiamata: {chiamante.nome} ({chiamante.crediti_residui} cr)")
-        print(f"  (cerca <nome> | id diretto | skip | budget | fine)\n")
+        print(f"  (cerca <nome> | <id> | skip | budget | rosa <id> | fine)\n")
 
-        raw = input("  > ").strip().lower()
+        raw = input("  > ").strip()
+        rl = raw.lower()
 
-        if raw in COMANDI_FINE:
+        if rl in COMANDI_FINE:
             break
-        if raw in COMANDI_SKIP:
+        if rl in COMANDI_SKIP:
             continue
-        if raw in COMANDI_BUDGET:
+        if rl in COMANDI_BUDGET:
             mostra_budget(db, id_lega)
-            if not ordine_random:
+            if ordine == "fisso":
                 turno -= 1
             continue
-        if raw.startswith("rosa"):
-            parts = raw.split()
+        if rl.startswith("rosa"):
+            parts = rl.split()
             if len(parts) > 1 and parts[1].isdigit():
                 mostra_rosa(db, int(parts[1]))
             else:
                 mostra_rosa(db, chiamante.id)
-            if not ordine_random:
+            if ordine == "fisso":
                 turno -= 1
             continue
 
-        # Ricerca giocatore: stringa libera o id
-        if raw.isdigit():
-            giocatore = db.get_giocatore(int(raw))
-        elif raw.startswith("cerca "):
-            q = raw[6:].strip()
-            risultati = [g for g in db.cerca_giocatori(nome=q)
-                         if not _in_rosa(db, id_lega, g.id)]
-            if not risultati:
-                print("  ✗ Nessun risultato.")
-                if not ordine_random:
-                    turno -= 1
-                continue
-            if len(risultati) == 1:
-                giocatore = risultati[0]
-            else:
-                print(f"  {len(risultati)} risultati:")
-                for g in risultati[:15]:
-                    print(f"    {_riga_giocatore(g)}")
-                id_g = _input_int("  Id giocatore (invio=torna indietro)", default=None)
-                if id_g is None:
-                    if not ordine_random:
-                        turno -= 1
-                    continue
-                giocatore = db.get_giocatore(id_g)
-        else:
-            risultati = [g for g in db.cerca_giocatori(nome=raw)
-                         if not _in_rosa(db, id_lega, g.id)]
-            if not risultati:
-                print("  ✗ Nessun risultato.")
-                if not ordine_random:
-                    turno -= 1
-                continue
-            if len(risultati) == 1:
-                giocatore = risultati[0]
-            else:
-                print(f"  {len(risultati)} risultati:")
-                for g in risultati[:15]:
-                    print(f"    {_riga_giocatore(g)}")
-                id_g = _input_int("  Id giocatore (invio=torna indietro)", default=None)
-                if id_g is None:
-                    if not ordine_random:
-                        turno -= 1
-                    continue
-                giocatore = db.get_giocatore(id_g)
-
+        giocatore = _cerca_e_seleziona(db, id_lega, raw)
         if not giocatore:
-            print("  ✗ Giocatore non trovato.")
-            if not ordine_random:
+            if ordine == "fisso":
                 turno -= 1
             continue
-
         if _in_rosa(db, id_lega, giocatore.id):
             print("  ✗ Giocatore già in rosa.")
-            if not ordine_random:
+            if ordine == "fisso":
                 turno -= 1
             continue
 
@@ -647,10 +670,13 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Esempi:
-  # Asta libera con ordine casuale di chiamata
-  python macros/asta.py --db data/lega.db --lega 1 --mode libera
+  # Asta libera senza turni — chiunque chiama il prossimo (default)
+  python macros/asta.py --db data/lega.db --lega 1
 
-  # Asta libera con ordine fisso
+  # Asta libera con ordine di chiamata random
+  python macros/asta.py --db data/lega.db --lega 1 --mode libera --ordine random
+
+  # Asta libera con ordine fisso (scegli tu la sequenza all'inizio)
   python macros/asta.py --db data/lega.db --lega 1 --mode libera --ordine fisso
 
   # Estrazione random dei giocatori
@@ -675,9 +701,12 @@ Formato CSV importa:
     p.add_argument("--mode",   default="libera",
                    choices=["libera", "random", "importa"],
                    help="Modalità asta (default: libera)")
-    p.add_argument("--ordine", default="random",
-                   choices=["random", "fisso"],
-                   help="Ordine di chiamata in modalità libera (default: random)")
+    p.add_argument("--ordine", default="libero",
+                   choices=["libero", "random", "fisso"],
+                   help="Ordine di chiamata in modalità libera: "
+                        "libero=nessun turno (default), "
+                        "random=squadra estratta ogni turno, "
+                        "fisso=ordine scelto all'inizio")
     p.add_argument("--file",   help="File CSV per modalità importa")
     return p
 
@@ -697,8 +726,7 @@ def main() -> None:
     print(db.info_lega(id_lega))
 
     if args.mode == "libera":
-        modalita_libera(db, mercato, id_lega, anno,
-                        ordine_random=(args.ordine == "random"))
+        modalita_libera(db, mercato, id_lega, anno, ordine=args.ordine)
 
     elif args.mode == "random":
         modalita_random(db, mercato, id_lega, anno)
