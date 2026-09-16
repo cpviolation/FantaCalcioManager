@@ -271,6 +271,54 @@ class Database:
         ).fetchall()
         return [self._row_to_fsq(r) for r in rows]
 
+    def aggiorna_fantasquadra(
+        self,
+        id_fsq: int,
+        *,
+        nome: Optional[str] = None,
+        presidente: Optional[str] = None,
+        email: Optional[str] = None,
+    ) -> None:
+        """
+        Aggiorna i dati anagrafici di una fantasquadra.
+
+        Solo i campi passati esplicitamente vengono modificati;
+        gli altri restano invariati.
+
+        Parameters
+        ----------
+        id_fsq      : id della fantasquadra
+        nome        : nuovo nome (opzionale)
+        presidente  : nuovo nome del presidente (opzionale)
+        email       : nuova email (opzionale)
+
+        Raises
+        ------
+        ValueError se nessun campo è stato specificato,
+        o se la fantasquadra non esiste.
+        """
+        campi: dict[str, object] = {}
+        if nome is not None:
+            campi["nome"] = nome
+        if presidente is not None:
+            campi["presidente"] = presidente
+        if email is not None:
+            campi["email"] = email
+
+        if not campi:
+            raise ValueError("Specificare almeno un campo da aggiornare.")
+
+        set_clause = ", ".join(f"{k}=?" for k in campi)
+        valori = list(campi.values()) + [id_fsq]
+
+        with self.transazione() as conn:
+            cur = conn.execute(
+                f"UPDATE fantasquadre SET {set_clause} WHERE id=?",
+                valori,
+            )
+        if cur.rowcount == 0:
+            raise ValueError(f"Fantasquadra con id={id_fsq} non trovata.")
+
     def aggiorna_crediti(self, id_fsq: int, delta: int) -> None:
         with self.transazione() as conn:
             conn.execute(
