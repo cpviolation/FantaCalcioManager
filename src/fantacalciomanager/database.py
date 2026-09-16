@@ -316,6 +316,42 @@ class Database:
         ).fetchall()
         return [self._row_to_fsq(r) for r in rows]
 
+    def info_lega(self, id_lega: int) -> str:
+        """
+        Restituisce una stringa di riepilogo della lega pronta da stampare.
+
+        Include i parametri della lega e l'elenco delle fantasquadre
+        con i crediti residui correnti.
+
+        Example
+        -------
+        >>> print(db.info_lega(1))
+        Lega: Serie Sanremo 2024/25  (stagione 3)
+        Crediti iniziali : 500   Giornate: 38
+        Fantasquadre (2):
+          [ 1]  Galacticos          Mario Rossi          cred: 320
+          [ 2]  Dream Team          Luigi Bianchi         cred: 415
+        """
+        lega = self.get_lega(id_lega)
+        if lega is None:
+            raise ValueError(f"Lega con id={id_lega} non trovata.")
+
+        squadre = self.lista_fantasquadre(id_lega)
+
+        righe = [
+            f"Lega: {lega.nome} {lega.anno}/{str(lega.anno + 1)[-2:]}  "
+            f"(stagione {lega.stagione})",
+            f"Crediti iniziali : {lega.crediti_iniziali}   "
+            f"Giornate: {lega.giornate_totali}",
+            f"Fantasquadre ({len(squadre)}):",
+        ]
+        for fsq in squadre:
+            righe.append(
+                f"  [{fsq.id:2d}]  {fsq.nome:<20s}  {fsq.presidente:<20s}  "
+                f"cred: {fsq.crediti_residui}"
+            )
+        return "\n".join(righe)
+
     def aggiorna_fantasquadra(
         self,
         id_fsq: int,
